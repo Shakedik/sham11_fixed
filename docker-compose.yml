@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  # Kafka Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - distributed-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - distributed-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # Unit 1 - API Gateway
+  unit1-api:
+    build:
+      context: ./unit1-api
+      dockerfile: Dockerfile
+    container_name: unit1-api-gateway
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - NER_SERVICE_URL=http://unit2-ner:8002
+      - STORAGE_SERVICE_URL=http://unit3-storage:8003
+      - NEWSDATA_API_KEY=${NEWSDATA_API_KEY}
+    networks:
+      - distributed-network
+    restart: unless-stopped
+
+  # Unit 2 - NER Service
+  unit2-ner:
+    build:
+      context: ./unit2-ner
+      dockerfile: Dockerfile
+    container_name: unit2-ner-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    networks:
+      - distributed-network
+    restart: unless-stopped
+
+  # Unit 3 - Storage Service
+  unit3-storage:
+    build:
+      context: ./unit3-storage
+      dockerfile: Dockerfile
+    container_name: unit3-storage-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+    networks:
+      - distributed-network
+    restart: unless-stopped
+
+  # Unit 4 - Frontend
+  unit4-frontend:
+    build:
+      context: ./unit4-frontend
+      dockerfile: Dockerfile
+    container_name: unit4-frontend
+    depends_on:
+      - unit1-api
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8001
+      - VITE_WS_URL=ws://localhost:8001
+    volumes:
+      - ./unit4-frontend/src:/app/src:ro
+      - /app/node_modules
+    networks:
+      - distributed-network
+    restart: unless-stopped
+
+networks:
+  distributed-network:
+    driver: bridge
